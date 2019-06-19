@@ -117,7 +117,7 @@ struct SAU_Scanner {
 	SAU_File *f;
 	SAU_SymTab *symtab;
 	SAU_ScanFilter_f *filters; // copy of SAU_Scanner_def_filters
-	SAU_ScanFrame sf;
+	SAU_ScanFrame sf, sf_next;
 	uint8_t undo_pos;
 	uint8_t unget_num;
 	uint8_t s_flags;

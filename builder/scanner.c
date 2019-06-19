@@ -88,6 +88,7 @@ bool SAU_Scanner_open(SAU_Scanner *restrict o,
 
 	o->sf.line_num = 1; // not increased upon first read
 	o->sf.char_num = 0;
+	o->sf_next = o->sf;
 	o->s_flags |= SAU_SCAN_S_DISCARD;
 	return true;
 }
@@ -179,7 +180,7 @@ uint8_t SAU_Scanner_filter_invalid(SAU_Scanner *restrict o, uint8_t c) {
 uint8_t SAU_Scanner_filter_space(SAU_Scanner *restrict o,
 		uint8_t c SAU__maybe_unused) {
 	SAU_File *f = o->f;
-	o->sf.char_num += SAU_File_skipspace(f);
+	o->sf_next.char_num += SAU_File_skipspace(f);
 	return SAU_SCAN_SPACE;
 }
 
@@ -192,8 +193,8 @@ uint8_t SAU_Scanner_filter_linebreaks(SAU_Scanner *restrict o, uint8_t c) {
 	SAU_File *f = o->f;
 	if (c == '\n') SAU_File_TRYC(f, '\r');
 	while (SAU_File_trynewline(f)) {
-		++o->sf.line_num;
-		o->sf.char_num = 0;
+		++o->sf_next.line_num;
+		o->sf_next.char_num = 0;
 	}
 	return SAU_SCAN_LNBRK;
 }
@@ -208,7 +209,7 @@ uint8_t SAU_Scanner_filter_linebreaks(SAU_Scanner *restrict o, uint8_t c) {
 uint8_t SAU_Scanner_filter_linecomment(SAU_Scanner *restrict o,
 		uint8_t c SAU__maybe_unused) {
 	SAU_File *f = o->f;
-	o->sf.char_num += SAU_File_skipline(f);
+	o->sf_next.char_num += SAU_File_skipline(f);
 	return SAU_SCAN_SPACE;
 }
 
@@ -226,8 +227,8 @@ uint8_t SAU_Scanner_filter_linecomment(SAU_Scanner *restrict o,
 uint8_t SAU_Scanner_filter_blockcomment(SAU_Scanner *restrict o,
 		uint8_t check_c) {
 	SAU_File *f = o->f;
-	int32_t line_num = o->sf.line_num;
-	int32_t char_num = o->sf.char_num;
+	int32_t line_num = o->sf_next.line_num;
+	int32_t char_num = o->sf_next.char_num;
 	for (;;) {
 		uint8_t c = SAU_File_GETC(f);
 		++char_num;
@@ -245,15 +246,15 @@ uint8_t SAU_Scanner_filter_blockcomment(SAU_Scanner *restrict o,
 			}
 		} else if (c <= SAU_FILE_MARKER && SAU_File_AFTER_EOF(f)) {
 			c = SAU_Scanner_filter_invalid(o, c);
-			o->sf.c_flags |= SAU_SCAN_C_ERROR;
-			--o->sf.char_num; // print for beginning of comment
+			o->sf_next.c_flags |= SAU_SCAN_C_ERROR;
+			--o->sf_next.char_num; // print for beginning of comment
 			SAU_Scanner_error(o, NULL, "unterminated comment");
-			++o->sf.char_num;
+			++o->sf_next.char_num;
 			return SAU_SCAN_EOF;
 		}
 	}
-	o->sf.line_num = line_num;
-	o->sf.char_num = char_num;
+	o->sf_next.line_num = line_num;
+	o->sf_next.char_num = char_num;
 	return SAU_SCAN_SPACE;
 }
 
@@ -270,12 +271,12 @@ uint8_t SAU_Scanner_filter_slashcomments(SAU_Scanner *restrict o, uint8_t c) {
 	SAU_File *f = o->f;
 	uint8_t next_c = SAU_File_GETC(f);
 	if (next_c == '*') {
-		++o->sf.char_num;
+		++o->sf_next.char_num;
 		o->match_c = '/';
 		return SAU_Scanner_filter_blockcomment(o, next_c);
 	}
 	if (next_c == '/') {
-		++o->sf.char_num;
+		++o->sf_next.char_num;
 		return SAU_Scanner_filter_linecomment(o, next_c);
 	}
 	SAU_File_DECP(f);
@@ -293,7 +294,7 @@ uint8_t SAU_Scanner_filter_slashcomments(SAU_Scanner *restrict o, uint8_t c) {
  * \return \p c or SAU_SCAN_SPACE
  */
 uint8_t SAU_Scanner_filter_char1comments(SAU_Scanner *restrict o, uint8_t c) {
-	if (o->sf.char_num == 1)
+	if (o->sf_next.char_num == 1)
 		return SAU_Scanner_filter_linecomment(o, c);
 	return c;
 }
@@ -440,7 +441,7 @@ const SAU_ScanFilter_f SAU_Scanner_def_filters[SAU_SCAN_FILTER_COUNT] = {
  */
 static void restore_frame(SAU_Scanner *restrict o, uint32_t offset) {
 	uint32_t i = (o->undo_pos - offset) & SAU_SCAN_UNGET_MAX;
-	o->sf = o->undo[i];
+	o->sf_next = o->undo[i];
 }
 
 /*
@@ -459,11 +460,11 @@ static void prepare_frame(SAU_Scanner *restrict o) {
 	} else {
 		o->undo_pos = (o->undo_pos + 1) & SAU_SCAN_UNGET_MAX;
 	}
-	o->undo[o->undo_pos] = o->sf;
-	if ((o->sf.c_flags & SAU_SCAN_C_LNBRK) != 0) {
-		o->sf.c_flags &= ~SAU_SCAN_C_LNBRK;
-		++o->sf.line_num;
-		o->sf.char_num = 0;
+	o->undo[o->undo_pos] = o->sf_next;
+	if ((o->sf_next.c_flags & SAU_SCAN_C_LNBRK) != 0) {
+		o->sf_next.c_flags &= ~SAU_SCAN_C_LNBRK;
+		++o->sf_next.line_num;
+		o->sf_next.char_num = 0;
 	}
 }
 
@@ -476,7 +477,7 @@ static void prepare_frame(SAU_Scanner *restrict o) {
 static void set_usedc(SAU_Scanner *restrict o, uint8_t c) {
 	SAU_File *f = o->f;
 	size_t r_pos = f->pos;
-	o->sf.c = c;
+	o->sf_next.c = c;
 	SAU_File_DECP(f);
 	SAU_File_FIXP(f);
 	SAU_File_SETC_NC(f, c);
@@ -501,9 +502,16 @@ static void advance_frame(SAU_Scanner *o, size_t strlen, uint8_t c) {
 		o->unget_num -= (reget_count - 1);
 	}
 	prepare_frame(o);
-	o->sf.char_num += char_inc;
-	o->sf.c = c;
+	o->sf_next.char_num += char_inc;
+	o->sf_next.c = c;
 	o->s_flags |= SAU_SCAN_S_DISCARD;
+}
+
+/*
+ * Use next scan frame. Call to complete a get.
+ */
+static inline void use_next(SAU_Scanner *restrict o) {
+	o->sf = o->sf_next;
 }
 
 /**
@@ -522,7 +530,7 @@ uint8_t SAU_Scanner_getc(SAU_Scanner *restrict o) {
 	bool skipped_space = false;
 	prepare_frame(o);
 	for (;;) {
-		++o->sf.char_num;
+		++o->sf_next.char_num;
 		c = SAU_File_GETC(f);
 		SAU_ScanFilter_f filter = SAU_Scanner_getfilter(o, c);
 		if (!filter) break;
@@ -542,13 +550,15 @@ uint8_t SAU_Scanner_getc(SAU_Scanner *restrict o) {
 		 * before returning it.
 		 */
 		SAU_File_UNGETC(f);
-		--o->sf.char_num;
+		--o->sf_next.char_num;
 		set_usedc(o, SAU_SCAN_SPACE);
+		use_next(o);
 		return SAU_SCAN_SPACE;
 	}
 	if (c == SAU_SCAN_LNBRK) {
-		o->sf.c_flags |= SAU_SCAN_C_LNBRK;
+		o->sf_next.c_flags |= SAU_SCAN_C_LNBRK;
 	}
+	use_next(o);
 	return c;
 }
 
@@ -569,7 +579,7 @@ uint8_t SAU_Scanner_getc_nospace(SAU_Scanner *restrict o) {
 	int32_t old_char_num;
 	prepare_frame(o);
 	for (;;) {
-		++o->sf.char_num;
+		++o->sf_next.char_num;
 		c = SAU_File_GETC(f);
 		filter = SAU_Scanner_getfilter(o, c);
 		if (!filter) break;
@@ -577,9 +587,9 @@ uint8_t SAU_Scanner_getc_nospace(SAU_Scanner *restrict o) {
 		if (c == SAU_SCAN_SPACE) continue;
 		if (c == SAU_SCAN_LNBRK) {
 			skipped_lnbrk = true;
-			old_char_num = o->sf.char_num;
-			++o->sf.line_num;
-			o->sf.char_num = 0;
+			old_char_num = o->sf_next.char_num;
+			++o->sf_next.line_num;
+			o->sf_next.char_num = 0;
 			continue;
 		}
 		if (c != 0) break;
@@ -593,12 +603,14 @@ uint8_t SAU_Scanner_getc_nospace(SAU_Scanner *restrict o) {
 		 * before returning it.
 		 */
 		SAU_File_UNGETC(f);
-		--o->sf.line_num;
-		o->sf.char_num = old_char_num;
-		o->sf.c_flags |= SAU_SCAN_C_LNBRK;
+		--o->sf_next.line_num;
+		o->sf_next.char_num = old_char_num;
+		o->sf_next.c_flags |= SAU_SCAN_C_LNBRK;
 		set_usedc(o, SAU_SCAN_LNBRK);
+		use_next(o);
 		return SAU_SCAN_LNBRK;
 	}
+	use_next(o);
 	return c;
 }
 
@@ -621,9 +633,10 @@ bool SAU_Scanner_tryc(SAU_Scanner *restrict o, uint8_t testc) {
 		if (c != testc)
 			return false;
 		prepare_frame(o);
-		++o->sf.char_num;
+		++o->sf_next.char_num;
 		SAU_File_INCP(o->f);
-		o->sf.c = c;
+		o->sf_next.c = c;
+		use_next(o);
 		return true;
 	}
 	c = SAU_Scanner_getc(o);
@@ -632,6 +645,7 @@ bool SAU_Scanner_tryc(SAU_Scanner *restrict o, uint8_t testc) {
 		SAU_Scanner_ungetc(o);
 		return false;
 	}
+	use_next(o);
 	return true;
 }
 
@@ -654,9 +668,10 @@ bool SAU_Scanner_tryc_nospace(SAU_Scanner *restrict o, uint8_t testc) {
 		if (c != testc)
 			return false;
 		prepare_frame(o);
-		++o->sf.char_num;
+		++o->sf_next.char_num;
 		SAU_File_INCP(o->f);
-		o->sf.c = c;
+		o->sf_next.c = c;
+		use_next(o);
 		return true;
 	}
 	c = SAU_Scanner_getc_nospace(o);
@@ -665,6 +680,7 @@ bool SAU_Scanner_tryc_nospace(SAU_Scanner *restrict o, uint8_t testc) {
 		SAU_Scanner_ungetc(o);
 		return false;
 	}
+	use_next(o);
 	return true;
 }
 
@@ -689,7 +705,8 @@ uint32_t SAU_Scanner_ungetc(SAU_Scanner *restrict o) {
 	restore_frame(o, ++o->unget_num);
 	SAU_File *f = o->f;
 	SAU_File_UNGETC(f);
-	set_usedc(o, o->sf.c);
+	set_usedc(o, o->sf_next.c);
+	use_next(o);
 	return o->unget_num;
 }
 
@@ -707,8 +724,8 @@ bool SAU_Scanner_geti(SAU_Scanner *restrict o,
 	SAU_File *f = o->f;
 	size_t read_len;
 	prepare_frame(o);
-	o->sf.c = SAU_File_RETC(f);
-	++o->sf.char_num;
+	o->sf_next.c = SAU_File_RETC(f);
+	++o->sf_next.char_num;
 	bool truncated = !SAU_File_geti(f, var, allow_sign, &read_len);
 	if (read_len == 0) {
 		o->s_flags |= SAU_SCAN_S_DISCARD;
@@ -721,6 +738,7 @@ bool SAU_Scanner_geti(SAU_Scanner *restrict o,
 	}
 	advance_frame(o, read_len - 1, SAU_File_RETC_NC(f));
 	if (str_len) *str_len = read_len;
+	use_next(o);
 	return !truncated;
 }
 
@@ -738,8 +756,8 @@ bool SAU_Scanner_getd(SAU_Scanner *restrict o,
 	SAU_File *f = o->f;
 	size_t read_len;
 	prepare_frame(o);
-	o->sf.c = SAU_File_RETC(f);
-	++o->sf.char_num;
+	o->sf_next.c = SAU_File_RETC(f);
+	++o->sf_next.char_num;
 	bool truncated = !SAU_File_getd(f, var, allow_sign, &read_len);
 	if (read_len == 0) {
 		o->s_flags |= SAU_SCAN_S_DISCARD;
@@ -752,6 +770,7 @@ bool SAU_Scanner_getd(SAU_Scanner *restrict o,
 	}
 	advance_frame(o, read_len - 1, SAU_File_RETC_NC(f));
 	if (str_len) *str_len = read_len;
+	use_next(o);
 	return !truncated;
 }
 
@@ -771,8 +790,8 @@ bool SAU_Scanner_getsymstr(SAU_Scanner *restrict o,
 	size_t len;
 	bool truncated;
 	prepare_frame(o);
-	o->sf.c = SAU_File_RETC(f);
-	++o->sf.char_num;
+	o->sf_next.c = SAU_File_RETC(f);
+	++o->sf_next.char_num;
 	truncated = !read_symstr(f, o->strbuf, STRBUF_LEN, &len);
 	if (len == 0) {
 		o->s_flags |= SAU_SCAN_S_DISCARD;
@@ -796,6 +815,7 @@ bool SAU_Scanner_getsymstr(SAU_Scanner *restrict o,
 	}
 	*strp = pool_str;
 	if (lenp) *lenp = len;
+	use_next(o);
 	return !truncated;
 }
 
