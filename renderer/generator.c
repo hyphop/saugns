@@ -60,6 +60,7 @@ typedef struct VoiceNode {
 typedef union EventValue {
 	int32_t i;
 	float f;
+	const SGS_Ramp *r;
 } EventValue;
 
 typedef struct EventOpData {
@@ -111,13 +112,6 @@ static uint32_t count_flags(uint32_t flags) {
 	return count;
 }
 
-static size_t count_ramp_values(const SGS_Ramp *restrict ramp) {
-	size_t count = 1; // flags always included
-	if ((ramp->flags & SGS_RAMP_STATE) != 0) ++count;
-	if ((ramp->flags & SGS_RAMP_CURVE) != 0) count += 3;
-	return count;
-}
-
 static size_t count_ev_values(const SGS_ProgramEvent *restrict e) {
 	size_t count = 0;
 	uint32_t params;
@@ -125,17 +119,11 @@ static size_t count_ev_values(const SGS_ProgramEvent *restrict e) {
 		params = e->vo_data->params;
 		params &= ~(SGS_PVOP_OPLIST);
 		count += count_flags(params);
-		if ((params & SGS_PVOP_PAN) != 0)
-			count += count_ramp_values(&e->vo_data->pan) - 1;
 	}
 	for (size_t i = 0; i < e->op_data_count; ++i) {
 		params = e->op_data[i].params;
 		params &= ~(SGS_POPP_ADJCS);
 		count += count_flags(params);
-		if ((params & SGS_POPP_FREQ) != 0)
-			count += count_ramp_values(&e->op_data[i].freq) - 1;
-		if ((params & SGS_POPP_AMP) != 0)
-			count += count_ramp_values(&e->op_data[i].amp) - 1;
 	}
 	return count;
 }
@@ -200,21 +188,6 @@ static bool alloc_for_program(SGS_Generator *restrict o,
 	return true;
 }
 
-static EventValue *convert_ramp_update(EventValue *restrict val,
-		const SGS_Ramp *restrict ramp) {
-	uint8_t flags = ramp->flags;
-	(*val++).i = flags;
-	if ((flags & SGS_RAMP_STATE) != 0) {
-		(*val++).f = ramp->v0;
-	}
-	if ((flags & SGS_RAMP_CURVE) != 0) {
-		(*val++).f = ramp->vt;
-		(*val++).i = ramp->time_ms;
-		(*val++).i = ramp->curve;
-	}
-	return val;
-}
-
 static bool convert_program(SGS_Generator *restrict o,
 		const SGS_Program *restrict prg, uint32_t srate) {
 	if (!alloc_for_program(o, prg))
@@ -264,15 +237,15 @@ static bool convert_program(SGS_Generator *restrict o,
 					SGS_MS_IN_SAMPLES(pod->silence_ms,
 							srate);
 			if (params & SGS_POPP_FREQ)
-				ev_v = convert_ramp_update(ev_v, &pod->freq);
+				(*ev_v++).r = &pod->freq;
 			if (params & SGS_POPP_FREQ2)
-				ev_v = convert_ramp_update(ev_v, &pod->freq2);
+				(*ev_v++).r = &pod->freq2;
 			if (params & SGS_POPP_PHASE)
 				(*ev_v++).i = SGS_Osc_PHASE(pod->phase);
 			if (params & SGS_POPP_AMP)
-				ev_v = convert_ramp_update(ev_v, &pod->amp);
+				(*ev_v++).r = &pod->amp;
 			if (params & SGS_POPP_AMP2)
-				ev_v = convert_ramp_update(ev_v, &pod->amp2);
+				(*ev_v++).r = &pod->amp2;
 			++ev_od;
 		}
 		if (prg_e->vo_data) {
@@ -284,7 +257,7 @@ static bool convert_program(SGS_Generator *restrict o,
 				e->vd.op_count = pvd->op_count;
 			}
 			if (params & SGS_PVOP_PAN)
-				ev_v = convert_ramp_update(ev_v, &pvd->pan);
+				(*ev_v++).r = &pvd->pan;
 			o->voices[vo_id].pos = -vo_wait_time;
 			vo_wait_time = 0;
 		}
@@ -348,19 +321,11 @@ static void set_voice_duration(SGS_Generator *restrict o,
 static const EventValue *handle_ramp_update(SGS_Ramp *restrict ramp,
 		uint32_t *restrict ramp_pos,
 		const EventValue *restrict val) {
-	SGS_Ramp src;
-	uint8_t flags = (*val++).i;
-	src.flags = flags;
-	if ((flags & SGS_RAMP_STATE) != 0) {
-		src.v0 = (*val++).f;
-	}
-	if ((flags & SGS_RAMP_CURVE) != 0) {
-		src.vt = (*val++).f;
-		src.time_ms = (*val++).i;
-		src.curve = (*val++).i;
+	const SGS_Ramp *src = (*val++).r;
+	if ((src->flags & SGS_RAMP_CURVE) != 0) {
 		*ramp_pos = 0;
 	}
-	SGS_Ramp_copy(ramp, &src);
+	SGS_Ramp_copy(ramp, src);
 	return val;
 }
 
